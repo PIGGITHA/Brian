@@ -7,6 +7,12 @@ export const twilioReady = (env) =>
 const digits = (n) => String(n || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
 export const isOwner = (env, number) => Boolean(number) && digits(number) === digits(env.MY_PHONE);
 
+// Tolerate numbers saved as "(806) 662-2331" or without the +1.
+const e164 = (n) => {
+  const d = String(n || '').replace(/\D/g, '');
+  return d.length === 10 ? '+1' + d : '+' + d;
+};
+
 export const xml = (s) =>
   String(s ?? '').replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
 
@@ -42,16 +48,20 @@ export async function verifyTwilio(env, request, params) {
 }
 
 async function twilioApi(env, resource, form) {
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/${resource}.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${String(env.TWILIO_ACCOUNT_SID).trim()}/${resource}.json`, {
     method: 'POST',
     headers: {
-      Authorization: 'Basic ' + btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`),
+      Authorization: 'Basic ' + btoa(`${String(env.TWILIO_ACCOUNT_SID).trim()}:${String(env.TWILIO_AUTH_TOKEN).trim()}`),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams(form),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || `Twilio error ${res.status}`);
+  if (!res.ok) {
+    const sid = String(env.TWILIO_ACCOUNT_SID).trim();
+    const hint = !/^AC[0-9a-f]{32}$/i.test(sid) ? ' TWILIO_ACCOUNT_SID should be the 34-character Account SID starting with "AC".' : '';
+    throw new Error(`Twilio said: ${body.message || 'no message'} (HTTP ${res.status}${body.code ? ', error ' + body.code : ''}).${hint}`);
+  }
   return body;
 }
 
@@ -67,8 +77,8 @@ export async function callOwner(env, message = '') {
   const id = crypto.randomUUID();
   await run(env, 'INSERT INTO intents (id, message) VALUES (?, ?)', id, message);
   const call = await twilioApi(env, 'Calls', {
-    To: env.MY_PHONE,
-    From: env.TWILIO_NUMBER,
+    To: e164(env.MY_PHONE),
+    From: e164(env.TWILIO_NUMBER),
     Url: `${await baseUrl(env)}/twilio/voice?intent=${id}`,
     Method: 'POST',
   });
@@ -77,6 +87,6 @@ export async function callOwner(env, message = '') {
 
 export async function textOwner(env, message) {
   if (!twilioReady(env)) throw new Error('Twilio is not configured yet.');
-  const sms = await twilioApi(env, 'Messages', { To: env.MY_PHONE, From: env.TWILIO_NUMBER, Body: String(message).slice(0, 1500) });
+  const sms = await twilioApi(env, 'Messages', { To: e164(env.MY_PHONE), From: e164(env.TWILIO_NUMBER), Body: String(message).slice(0, 1500) });
   return { sent: true, sid: sms.sid };
 }
